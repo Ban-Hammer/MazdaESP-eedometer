@@ -1,0 +1,16 @@
+# Secrets — real AP credentials, never commit
+Arduino/xiao_ota_bridge/secrets.h
+
+# Host test binaries / object files
+Arduino/libraries/ota_protocol/test/test_crc32
+Arduino/libraries/ota_protocol/test/test_frame
+Arduino/libraries/ota_protocol/test/test_state_machine
+*.o
+
+# Large local apps (Arduino IDE, SavvyCAN, etc.)
+*.AppImage
+
+# Editor / OS cruft
+.directory
+__pycache__/
+*.pyc

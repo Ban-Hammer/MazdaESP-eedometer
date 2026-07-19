@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "WebSearch",
+      "Bash(find:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.lvgl.io)",
+      "Bash(findstr:*)"
+    ]
+  }
+}
