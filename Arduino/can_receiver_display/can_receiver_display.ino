@@ -4,6 +4,7 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include "ota_update.h"
+#include "splash.h"
 
 #define FW_VERSION "2026.07.19-ota-test"
 
@@ -144,6 +145,20 @@ void otaUi(ota::Ui phase, uint8_t pct, const char* msg) {
   }
 }
 
+// Called once per splash frame: keep the board updatable, and abort the splash the
+// moment real CAN data shows the car is moving.
+static bool splashInterFrame() {
+  ota::service(otaUi);                     // an OTA mid-splash takes over + reboots
+  if (!digitalRead(CAN0_INT)) {            // non-blocking CAN peek
+    CAN0.readMsgBuf(&rxId, &len, rxBuf);
+    if (rxId == 0x202) {
+      unsigned int raw = (rxBuf[2] << 8) | rxBuf[3];
+      if ((raw + 50) / 100 > 0) return true;   // moving -> abort
+    }
+  }
+  return false;
+}
+
 // Map a 0x09F frame to a target backlight PWM duty (0-255).
 // Daylight mode -> full; otherwise scale the night dimmer level, clamped so the
 // screen never goes fully dark.
@@ -243,6 +258,11 @@ void setup() {
   gear_spr.setTextColor(TFT_WHITE, TFT_BLACK);
   mazdaspeed.setTextColor(TFT_ORANGE, TFT_BLACK);
   dm.setTextColor(TFT_WHITE, TFT_BLACK);
+
+  // Boot splash. Backlight is otherwise first driven in loop()'s updateBacklight(),
+  // which runs only after this, so turn it on here or the splash renders dark.
+  analogWrite(BL_PIN, 255);
+  splash::play(tft, 15, splashInterFrame);   // ~2s MJPEG splash (aborts if moving)
 }
 
 // Redraw speed and gear from the current global state, only when they change.
