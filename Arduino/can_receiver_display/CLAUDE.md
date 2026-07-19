@@ -12,13 +12,27 @@ This project is designed for **Mazda MX-5 ND (2016-2024)**. It is likely not com
 
 ## Build and Upload
 
-This is an Arduino project. Build and upload the sketch with the Arduino IDE or CLI:
+This is an Arduino project. Build and upload with the Arduino IDE or `arduino-cli`.
+
+**The RP2040 firmware compiles the wireless-OTA path in (`ota_update.*` +
+`Updater`/`PicoOTA`), which requires a filesystem partition ≥128 KB. The FQBN
+MUST therefore carry a `flash=` option that reserves an FS — building with the
+bare `rp2040:rp2040:adafruit_feather` FQBN now fails with `Need to define a 128K
+or larger filesystem to use OTA`.**
 
 ```bash
-# Arduino CLI
-arduino-cli compile --fqbn rp2040:rp2040:adafruit_feather can_receiver_display
-arduino-cli upload -p COM_PORT --fqbn rp2040:rp2040:adafruit_feather can_receiver_display
+# RP2040 display — flash=8388608_2097152 => 8MB total, 6MB sketch / 2MB FS
+arduino-cli compile --fqbn rp2040:rp2040:adafruit_feather:flash=8388608_2097152 can_receiver_display
+arduino-cli upload  -p /dev/ttyACM0 \
+  --fqbn rp2040:rp2040:adafruit_feather:flash=8388608_2097152 can_receiver_display
+
+# XIAO ESP32-S3 OTA bridge (sibling sketch)
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 ../xiao_ota_bridge
 ```
+
+In the Arduino IDE, the equivalent is **Tools → Flash Size → "8MB (Sketch: 6MB,
+FS: 2MB)"**. See `docs/superpowers/specs/2026-07-18-rp2040-wireless-ota-design.md`
+for the OTA design.
 
 ### Uploading fonts to LittleFS (required before first run)
 
@@ -33,8 +47,9 @@ plugin (by earlephilhower), NOT `arduino-cli`:
    https://github.com/earlephilhower/arduino-littlefs-upload/releases and place it
    in `~/.arduinoIDE/plugins/` (create the folder if missing — the AppImage does
    not create it automatically), then restart the IDE.
-2. Ensure `Tools -> Flash Size` reserves a nonzero **FS** partition (e.g. "2MB
-   (Sketch: 1MB, FS: 1MB)"). The fonts are ~135 KB.
+2. Ensure `Tools -> Flash Size` reserves a nonzero **FS** partition — use the same
+   "8MB (Sketch: 6MB, FS: 2MB)" layout the OTA build requires (see above). The FS
+   holds the fonts (~135 KB) *and* the staged OTA image (~1 MB).
 3. Open this sketch (so its `data/` folder is found), close the Serial Monitor
    (it holds the port), then run `Ctrl+Shift+P` -> "Upload LittleFS to
    Pico/RP2040...".
