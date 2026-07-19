@@ -14,20 +14,27 @@ This project is designed for **Mazda MX-5 ND (2016-2024)**. It is likely not com
 
 This is an Arduino project. Build and upload with the Arduino IDE or `arduino-cli`.
 
-**The RP2040 firmware compiles the wireless-OTA path in (`ota_update.*` +
-`Updater`/`PicoOTA`), which requires a filesystem partition ≥128 KB. The FQBN
-MUST therefore carry a `flash=` option that reserves an FS — building with the
-bare `rp2040:rp2040:adafruit_feather` FQBN now fails with `Need to define a 128K
-or larger filesystem to use OTA`.**
+**Use the `adafruit_feather_can` FQBN, NOT the generic `adafruit_feather`.** The
+board is the Adafruit Feather RP2040 **CAN Bus**; its integrated MCP2515 sits on
+the default `SPI` mapped to `spi1` (SCK=14, MOSI=15, MISO=8, CS=19, INT=22). The
+generic `adafruit_feather` variant maps `SPI` to 18/19/20 (MOSI 19 even collides
+with CAN CS 19), so CAN init fails with repeating `Enter Configuration Mode
+Failure...` and — with no CAN — the screen stays blank.
+
+**Also required:** the `flash=` option must reserve an FS partition ≥128 KB, or
+the compiled-in OTA path (`ota_update.*` + `Updater`/`PicoOTA`) fails to build
+with `Need to define a 128K or larger filesystem to use OTA`.
 
 ```bash
-# RP2040 display — flash=8388608_2097152 => 8MB total, 6MB sketch / 2MB FS
-arduino-cli compile --fqbn rp2040:rp2040:adafruit_feather:flash=8388608_2097152 can_receiver_display
+# RP2040 display — _can variant + flash=8388608_2097152 (8MB: 6MB sketch / 2MB FS)
+arduino-cli compile --fqbn rp2040:rp2040:adafruit_feather_can:flash=8388608_2097152 can_receiver_display
 arduino-cli upload  -p /dev/ttyACM0 \
-  --fqbn rp2040:rp2040:adafruit_feather:flash=8388608_2097152 can_receiver_display
+  --fqbn rp2040:rp2040:adafruit_feather_can:flash=8388608_2097152 can_receiver_display
 
-# XIAO ESP32-S3 OTA bridge (sibling sketch)
-arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 ../xiao_ota_bridge
+# XIAO ESP32-S3 OTA bridge (sibling sketch) — PSRAM=opi is REQUIRED: the bridge
+# buffers the image in PSRAM, and the board defaults to PSRAM=disabled. Without it
+# ps_malloc() fails and every upload reports "FAIL: image too large".
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi ../xiao_ota_bridge
 ```
 
 In the Arduino IDE, the equivalent is **Tools → Flash Size → "8MB (Sketch: 6MB,

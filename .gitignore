@@ -14,3 +14,6 @@ Arduino/libraries/ota_protocol/test/test_state_machine
 .directory
 __pycache__/
 *.pyc
+
+# Build output (arduino-cli --output-dir)
+build/

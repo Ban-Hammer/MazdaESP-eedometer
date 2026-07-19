@@ -53,8 +53,19 @@ static String flash_to_rp2040() {
 
   uint8_t hdr[8]; header_encode(g_len, crc32(g_img, g_len), hdr);
   send_frame(MsgType::HEADER, hdr, 8);
-  Serial1.write(g_img, g_len);      // raw data phase
-  Serial1.flush();
+  if (!recv_frame(&f, 5000) || f.type != MsgType::ACK) return "FAIL: display not ready after header";
+
+  // Flow-controlled data phase: one OTA_BLOCK at a time, wait for the display's
+  // ACK (sent once each block is written to flash) before sending the next.
+  size_t sent = 0;
+  while (sent < g_len) {
+    size_t chunk = (g_len - sent) < OTA_BLOCK ? (g_len - sent) : OTA_BLOCK;
+    Serial1.write(g_img + sent, chunk);
+    Serial1.flush();
+    if (!recv_frame(&f, 5000) || f.type != MsgType::ACK)
+      return String("FAIL: transfer stalled at ") + String((unsigned)sent) + " bytes";
+    sent += chunk;
+  }
 
   if (!recv_frame(&f, 30000) || f.type != MsgType::RESULT || f.payload_len < 1)
     return "FAIL: no result from display";
@@ -92,6 +103,7 @@ static void handleUploadData() {
   }
 }
 static void handleUploadDone() {
+  if (g_cap == 0)      { server.send(500, "text/plain", "FAIL: XIAO PSRAM unavailable - reflash XIAO with PSRAM=opi"); return; }
   if (g_len == 0)      { server.send(400, "text/plain", "FAIL: empty upload"); return; }
   if (g_len > g_cap)   { server.send(413, "text/plain", "FAIL: image too large"); return; }
   String r = flash_to_rp2040();

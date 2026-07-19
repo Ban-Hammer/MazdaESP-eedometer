@@ -30,23 +30,28 @@ namespace {
     return got;
   }
 
-  // Blocking data phase: receive img_len raw bytes, stage via Update.write, compute CRC.
-  // Returns true iff the whole image was staged AND the CRC matched. On any failure it
-  // sends the appropriate RESULT and returns false (nothing committed).
+  // Blocking data phase: receive img_len raw bytes one OTA_BLOCK at a time, ACKing
+  // each block so the sender never gets ahead of our flash writes (flow control).
+  // Returns true iff the whole image was staged AND the CRC matched. On any failure
+  // it sends the appropriate RESULT and returns false (nothing committed).
   bool receive_and_stage(uint32_t img_len, uint32_t img_crc, ota::UiCallback cb) {
     if (img_len == 0)              { send_result(ResultCode::BAD_LENGTH); return false; }
     if (!Update.begin(img_len))    { send_result(ResultCode::FLASH_ERROR); return false; }
+    send_frame(MsgType::ACK, nullptr, 0);   // header-ack: flash ready, send block 0
+
+    static uint8_t buf[OTA_BLOCK];   // static: too big for this call's stack
     uint32_t crc = crc32_init();
     uint32_t remaining = img_len;
-    uint8_t  buf[512];
     uint8_t  last_pct = 255;
     while (remaining) {
-      size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
-      size_t got = read_exact(buf, chunk, BYTE_TIMEOUT_MS);
-      if (got == 0) { send_result(ResultCode::TIMEOUT); return false; }      // stall
-      if (Update.write(buf, got) != got) { send_result(ResultCode::FLASH_ERROR); return false; }
-      crc = crc32_update(crc, buf, got);
-      remaining -= got;
+      size_t chunk = remaining < OTA_BLOCK ? remaining : OTA_BLOCK;
+      // The sender waits for our previous ACK, so no bytes arrive during Update.write
+      // and the whole block streams into the FIFO faster than we can be overrun.
+      if (read_exact(buf, chunk, BYTE_TIMEOUT_MS) != chunk) { send_result(ResultCode::TIMEOUT); return false; }
+      if (Update.write(buf, chunk) != chunk) { send_result(ResultCode::FLASH_ERROR); return false; }
+      crc = crc32_update(crc, buf, chunk);
+      remaining -= chunk;
+      send_frame(MsgType::ACK, nullptr, 0);   // block written, send the next one
       uint8_t pct = (uint8_t)(100u * (uint64_t)(img_len - remaining) / img_len);
       if (cb && pct != last_pct) { cb(ota::Ui::PROGRESS, pct, "Updating"); last_pct = pct; }
     }
@@ -102,6 +107,7 @@ namespace ota {
 
 void begin(const char* fw_version, unsigned long baud) {
   g_ver = fw_version ? fw_version : "?";
+  Serial1.setFIFOSize(1024);                           // default is 32; absorb RX jitter
   Serial1.begin(baud);                                 // Feather RP2040: GP0=TX, GP1=RX
   frameparser_reset(&g_parser);
 }

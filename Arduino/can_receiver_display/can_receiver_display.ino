@@ -5,7 +5,7 @@
 #include <LittleFS.h>
 #include "ota_update.h"
 
-#define FW_VERSION "2026.07.18-base"
+#define FW_VERSION "2026.07.19-ota-test"
 
 #define SPEED_FONT "speed112_2"
 #define GEAR_FONT "gear96"
@@ -44,13 +44,13 @@
 // ---- Screen orientation & label layout ---------------------------------------
 // Every on-screen position lives here so the display can be re-aimed without
 // hunting through the draw code. Panel is 240x240 (see TFT_eSPI User_Setup.h).
-#define SCREEN_ROTATION     2      // tft.setRotation(): 0/1/2/3 = 0/90/180/270 deg
+#define SCREEN_ROTATION     0      // tft.setRotation(): 0/1/2/3 = 0/90/180/270 deg
 
 // Speed digits (top). NUDGE_X shifts wide / leading-"1" numbers left so the
 // leading digit stays put (see drawSpeedGear()).
 #define SPEED_X             0
-#define SPEED_Y             10
-#define SPEED_NUDGE_X       (-15)
+#define SPEED_Y             15
+#define SPEED_NUDGE_X       (-25)
 
 // Big gear glyph (bottom), gear96 draws ~67px tall from GEAR_Y. GEAR_Y is kept a
 // little high of centre so the glyph clears the MAZDASPEED band above and the

@@ -17,6 +17,11 @@ static const uint8_t MAGIC1 = 0x5A;
 static const size_t  FRAME_OVERHEAD = 2 /*magic*/ + 1 /*type*/ + 2 /*len*/ + 4 /*crc*/;
 static const size_t  MAX_PAYLOAD = 64;
 
+// Data-phase block size. The sender transmits one block of raw image bytes, then
+// waits for an ACK before the next — flow control so the receiver's UART RX FIFO
+// is never overrun while it pauses to write a block to flash.
+static const uint32_t OTA_BLOCK = 4096;
+
 enum class MsgType : uint8_t {
   ENTER_UPDATE = 0x01,
   ACK          = 0x02,
