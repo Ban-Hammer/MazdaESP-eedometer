@@ -38,10 +38,11 @@ premise ("no wireless radio") no longer holds now that the XIAO provides one.
 ## Chosen Approach (Approach A)
 
 **UART pipe, RP2040 self-flashes.** The XIAO hosts a WPA2 SoftAP with a web upload page,
-receives the `.bin` over Wi-Fi, and streams it to the RP2040 over a 2-wire UART. The
-RP2040 feeds the stream into arduino-pico's `Update` (`Update.begin` / `writeStream` /
-`Update.end`), which stages the image to LittleFS; on reboot the arduino-pico **stage-3
-OTA bootloader** (power-fail-safe, ~12 KB) copies it into application flash.
+receives the `.bin` over Wi-Fi, and sends it to the RP2040 over a 2-wire UART in
+flow-controlled blocks (see Update Protocol). The RP2040 feeds each block into
+arduino-pico's `Update` (`Update.begin` / `Update.write` per block / `Update.end`), which
+stages the image to LittleFS; on reboot the arduino-pico **stage-3 OTA bootloader**
+(power-fail-safe, ~12 KB) copies it into application flash.
 
 Rejected alternatives:
 - **SPI link** — SPI0 is fully committed to the TFT + MCP2515; speed gain is irrelevant
@@ -64,7 +65,7 @@ Two boards, clear responsibilities, one well-defined interface (the UART protoco
 
 ```
 [phone/laptop] --WiFi/WPA2--> [XIAO ESP32-S3] --UART (Serial1)--> [RP2040 Feather] --> flash
-                              SoftAP + upload page  3 wires        Update.writeStream
+                              SoftAP + upload page  3 wires        block-ACK + Update.write
 ```
 
 ### Boundaries
@@ -125,17 +126,27 @@ handshake. XIAO SoftAP idle/down.
 2. XIAO validates the file is present, reads its length and expected checksum.
 3. XIAO sends `ENTER_UPDATE`. RP2040 acks, **pauses the display loop**, shows an
    "Updating…" screen, stops touching CAN/TFT.
-4. XIAO sends a header (image length, checksum), then streams image bytes. RP2040 feeds
-   them into `Update.writeStream(Serial1)` (staged to LittleFS).
-5. On `Update.end()`, RP2040 **verifies the staged image checksum**:
-   - **Mismatch → reject:** discard staged image, report `FAIL`, resume normal display.
+4. XIAO sends a `HEADER` frame (image length + CRC32). The RP2040 calls
+   `Update.begin(len)` and **ACKs** once flash staging is ready. The image then
+   transfers **one 4 KB block (`OTA_BLOCK`) at a time under per-block flow control**:
+   the XIAO sends a block, the RP2040 writes it (`Update.write`, staged to LittleFS)
+   while accumulating a CRC32, then ACKs; only on that ACK does the XIAO send the next
+   block.
+5. After the final block, the RP2040 **verifies the accumulated CRC32** against the
+   header value:
+   - **Mismatch → reject:** report `FAIL` (`CRC_MISMATCH`), resume normal display.
      No command file, no reboot.
-   - **Match → commit:** write the OTA command file, report `OK`, reboot.
+   - **Match → commit:** `Update.end()` writes the OTA command file, report `OK`, reboot.
 6. Stage-3 bootloader applies the staged image (power-fail-safe) and boots new firmware.
 
-**Flow control & timing:** XIAO paces the stream; RP2040 uses the UART FIFO +
-`writeStream` backpressure. Baud ~460k–921k → ~1 MB in a few seconds. An RP2040-side
-watchdog/timeout aborts back to normal operation if the stream stalls.
+**Flow control & timing:** the transfer is **block-ACK gated** — the XIAO never sends
+the next block until the RP2040 ACKs the previous one (sent *after* that block is
+written to flash). This backpressure is required: the RP2040's UART RX FIFO defaults to
+just **32 bytes** and would otherwise overrun during flash-write pauses, dropping bytes
+and stalling the transfer (observed as a data-phase `TIMEOUT`). The RP2040 RX FIFO is
+also enlarged to 1 KB as insurance. At 921600 baud a ~160 KB image transfers in a few
+seconds. Per-frame and per-block timeouts abort back to normal operation if the link
+stalls.
 
 **Auxiliary command — `PING`/version:** the upload page can query the RP2040's currently
 running firmware version over UART, to confirm the link is alive and show the current
@@ -147,9 +158,9 @@ version before pushing.
 
 | When it fails                              | Behavior                                             | Outcome                    |
 |--------------------------------------------|------------------------------------------------------|----------------------------|
-| Upload/stream stalls or times out          | Watchdog aborts update mode, resumes CAN/display     | Old firmware intact        |
-| Checksum mismatch after `writeStream`      | Staged image discarded, `FAIL` to XIAO, no command   | Old firmware intact, no reboot |
-| Power lost **during streaming** (staging)  | No command file written yet                          | Boots old firmware, safe   |
+| Block ACK / frame times out                | RP2040 aborts update mode, resumes CAN/display       | Old firmware intact        |
+| CRC32 mismatch after final block           | Staged image not committed, `FAIL` to XIAO, no command | Old firmware intact, no reboot |
+| Power lost **during block transfer** (staging) | No command file written yet                      | Boots old firmware, safe   |
 | Power lost **during bootloader apply**     | Power-fail-safe bootloader resumes copy next boot    | Completes on next power-up |
 | XIAO crashes/reboots mid-transfer          | RP2040 times out → abort to normal                   | Old firmware intact        |
 
@@ -175,7 +186,7 @@ that compiles and checksums correctly but crashes on boot would be committed. De
 
 - **Access control:** SoftAP is **WPA2-PSK** (password in XIAO config). Only you can join,
   so only you can reach the upload page — this is the primary gate.
-- **Integrity:** MD5/CRC of the image is verified on the RP2040 before commit; catches
+- **Integrity:** a **CRC32** of the image is verified on the RP2040 before commit; catches
   corruption. Combined with WPA2 access control this is sufficient (crypto signing was
   deliberately excluded as overkill for a personal car).
 - **Transport:** the upload page is plain HTTP over the AP (self-contained, no cert),
@@ -199,8 +210,8 @@ Factor framing, protocol state machine, and checksum into natively-compilable fu
 2. **Handshake + PING/version** — `ENTER_UPDATE`/ack and version query exchange correctly.
 3. **Checksum gate** — known image with correct vs corrupted checksum; reject discards and
    does **not** reboot, accept proceeds.
-4. **Stage-without-commit** — `writeStream` to LittleFS but skip the command file; staged
-   file exists and **old firmware still boots** (non-destructive path proven).
+4. **Stage-without-commit** — `Update.write` the blocks to LittleFS but skip the command
+   file; staged file exists and **old firmware still boots** (non-destructive path proven).
 5. **End-to-end happy path** — upload a genuinely different working build (bumped version +
    visible on-screen change) via the page; confirm reboot into the new version (PING +
    on-screen) and that CAN/display still render on the bench.
@@ -223,11 +234,17 @@ Factor framing, protocol state machine, and checksum into natively-compilable fu
 **Non-negotiable gates before in-car deployment:** power-cut-during-apply recovery, and
 lockout-recovery via update-mode-first.
 
-## Open Implementation Details (to pin down during planning)
+## Resolved Implementation Details (as built)
 
-- Exact arduino-pico Flash Size / OTA menu selection and LittleFS partition size.
-- UART baud rate (target 460k–921k) and framing format (magic bytes, header fields).
-- Checksum algorithm (MD5 vs CRC32) and whether the image is GZIP-compressed in transit
-  (the stage-3 bootloader can decompress GZIP).
-- Chosen XIAO GPIO pins for UART TX/RX.
-- Upload page UX (progress, current-version display, success/failure states).
+- **Board / flash layout:** `rp2040:rp2040:adafruit_feather_can:flash=8388608_2097152`
+  (8 MB: 6 MB sketch / 2 MB LittleFS). The `_can` variant is required — the generic
+  `adafruit_feather` maps the default `SPI` to the wrong pins for the integrated MCP2515.
+- **UART:** 921600 baud, 8N1. RP2040 `Serial1` = GP0(TX)/GP1(RX); XIAO `Serial1` = D6(TX)/
+  D7(RX). RP2040 RX FIFO enlarged to 1 KB.
+- **Framing:** `MAGIC0(0xA5) MAGIC1(0x5A) TYPE LEN(2 LE) PAYLOAD CRC32(4 LE)`; `HEADER`
+  payload = `u32 img_len` + `u32 img_crc32`.
+- **Integrity:** CRC32 (IEEE 802.3), verified on the RP2040 before commit. No GZIP in
+  transit (raw blocks — simpler; the size headroom made compression unnecessary).
+- **Transfer:** flow-controlled, `OTA_BLOCK` = 4096 bytes, one block per ACK.
+- **XIAO:** SoftAP is WPA2-PSK; requires **PSRAM=opi** (image buffered in PSRAM). Upload
+  page shows current version (via `PING`/`VERSION`), a progress bar, and OK/FAIL text.
