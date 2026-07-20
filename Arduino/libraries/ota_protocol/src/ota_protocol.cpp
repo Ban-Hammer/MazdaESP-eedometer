@@ -35,6 +35,47 @@ void header_decode(const uint8_t in[8], uint32_t* img_len, uint32_t* img_crc32) 
   *img_len = get_u32(in); *img_crc32 = get_u32(in + 4);
 }
 
+size_t list_entry_encode(bool isDir, uint32_t size, const char* name, uint8_t* out, size_t out_cap) {
+  size_t nlen = 0; while (name[nlen]) nlen++;
+  if (nlen > OTA_MAX_NAME) return 0;
+  size_t total = 1 + 4 + nlen;
+  if (out_cap < total || total > MAX_PAYLOAD) return 0;
+  out[0] = isDir ? 1 : 0;
+  put_u32(out + 1, size);
+  for (size_t i = 0; i < nlen; ++i) out[5 + i] = (uint8_t)name[i];
+  return total;
+}
+bool list_entry_decode(const uint8_t* payload, size_t plen, bool* isDir, uint32_t* size,
+                       char* name, size_t name_cap) {
+  if (plen < 5) return false;
+  *isDir = (payload[0] & 1) != 0;
+  *size = get_u32(payload + 1);
+  size_t nlen = plen - 5;
+  if (nlen >= name_cap) return false;
+  for (size_t i = 0; i < nlen; ++i) name[i] = (char)payload[5 + i];
+  name[nlen] = 0;
+  return true;
+}
+size_t writehdr_encode(uint32_t len, uint32_t crc, const char* path, uint8_t* out, size_t out_cap) {
+  size_t plen = 0; while (path[plen]) plen++;
+  if (plen > OTA_MAX_NAME) return 0;
+  size_t total = 8 + plen;
+  if (out_cap < total || total > MAX_PAYLOAD) return 0;
+  put_u32(out, len); put_u32(out + 4, crc);
+  for (size_t i = 0; i < plen; ++i) out[8 + i] = (uint8_t)path[i];
+  return total;
+}
+bool writehdr_decode(const uint8_t* payload, size_t plen, uint32_t* len, uint32_t* crc,
+                     char* path, size_t path_cap) {
+  if (plen < 8) return false;
+  *len = get_u32(payload); *crc = get_u32(payload + 4);
+  size_t n = plen - 8;
+  if (n >= path_cap) return false;
+  for (size_t i = 0; i < n; ++i) path[i] = (char)payload[8 + i];
+  path[n] = 0;
+  return true;
+}
+
 // ---------- frame codec ----------
 size_t frame_encode(MsgType type, const uint8_t* payload, size_t payload_len,
                     uint8_t* out, size_t out_cap) {
