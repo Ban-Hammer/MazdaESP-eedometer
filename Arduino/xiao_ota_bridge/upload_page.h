@@ -101,21 +101,35 @@ function del(path,btn){
   } else { btn.dataset.armed=1;btn.textContent='Confirm';
     setTimeout(()=>{if(btn.dataset.armed){delete btn.dataset.armed;btn.textContent='Delete';}},2500);}
 }
+function setBusy(b){$('fwbtn').disabled=b;$('upbtn').disabled=b;}
 function xhrUpload(url,file,bar,log,done){
   const x=new XMLHttpRequest();x.open('POST',url);
   x.upload.onprogress=e=>{$(bar).style.width=(80*e.loaded/e.total)+'%';};
   x.onload=()=>{$(bar).style.width='100%';$(log).textContent=x.responseText;done&&done();};
-  x.onerror=()=>{$(log).textContent='upload error';};
+  x.onerror=()=>{$(log).textContent='upload error';setBusy(false);};
   const fd=new FormData();fd.append('f',file);x.send(fd);
+}
+// After a firmware flash the display reboots; keep the buttons locked and poll /ping
+// until it answers again, so a second flash can't fire into the reboot window.
+function waitReboot(tries){
+  tries=tries||0;
+  fetch('/ping').then(r=>r.text()).then(t=>{
+    if(t && t.indexOf('not responding')<0 && t.indexOf('no reply')<0){
+      $('ver').textContent=t;$('fwlog').textContent+='\nback online: '+t;setBusy(false);return;
+    }
+    next();
+  }).catch(next);
+  function next(){ if(tries<25){setTimeout(()=>waitReboot(tries+1),1000);} else {setBusy(false);} }
 }
 function flashFw(){
   const f=$('fw').files[0];if(!f){$('fwlog').textContent='pick a .bin';return;}
-  $('fwlog').textContent='uploading…';xhrUpload('/update',f,'fwbar','fwlog');
+  setBusy(true);$('fwlog').textContent='uploading…';
+  xhrUpload('/update',f,'fwbar','fwlog',()=>{$('fwlog').textContent+='\nrebooting — waiting for display…';waitReboot();});
 }
 function upload(){
   const f=$('up').files[0];if(!f){$('uplog').textContent='pick a file';return;}
-  $('uplog').textContent='uploading '+f.name+'…';
-  xhrUpload('/api/upload?path='+encodeURIComponent(cwd),f,'upbar','uplog',()=>{$('upbar').style.width='0';list();});
+  setBusy(true);$('uplog').textContent='uploading '+f.name+'…';
+  xhrUpload('/api/upload?path='+encodeURIComponent(cwd),f,'upbar','uplog',()=>{$('upbar').style.width='0';setBusy(false);list();});
 }
 list();
 </script></body></html>

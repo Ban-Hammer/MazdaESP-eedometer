@@ -182,6 +182,12 @@ void cleanupStaging() {
 }
 
 void service(UiCallback cb) {
+  // Re-entrancy guard: service() is polled from both loop() and (during the boot
+  // splash) splashInterFrame(). A session must never be entered while another is
+  // running, or a second trigger desyncs the framing.
+  static bool inSession = false;
+  if (inSession) return;
+
   ParsedFrame f;
   while (Serial1.available()) {
     ParseStatus s = frameparser_push(&g_parser, (uint8_t)Serial1.read(), &f);
@@ -194,8 +200,13 @@ void service(UiCallback cb) {
         send_frame(MsgType::VERSION, (const uint8_t*)g_ver, strlen(g_ver));
         break;
       case MsgType::ENTER_UPDATE:
+        inSession = true;
         run_session(cb);                                // blocks; reboots on success
+        // Only reached on a failed session (success reboots). Clear any garbage a
+        // desynced sender left so it can't poison the next session.
+        while (Serial1.available()) Serial1.read();
         frameparser_reset(&g_parser);
+        inSession = false;
         return;
       case MsgType::LIST_REQ: {
         char path[64]; size_t n = f.payload_len < sizeof(path) ? f.payload_len : sizeof(path) - 1;
