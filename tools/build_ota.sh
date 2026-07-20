@@ -13,8 +13,10 @@ SKETCH_DIR="$REPO/Arduino/can_receiver_display"
 INO="$SKETCH_DIR/can_receiver_display.ino"
 # Board is the Adafruit Feather RP2040 CAN (integrated MCP2515 on spi1 / pins
 # 14/15/8) — the _can variant is required; the generic adafruit_feather maps SPI
-# to the wrong pins and CAN init fails. Flash option must match the board (2MB FS).
-FQBN="rp2040:rp2040:adafruit_feather_can:flash=8388608_2097152"
+# to the wrong pins and CAN init fails. flash= must match the board (2MB FS).
+# freq=250 (overclock) is compiled in for boot-splash JPEG decode headroom; keep
+# it identical here and on the USB flash or an OTA update reverts the clock.
+FQBN="rp2040:rp2040:adafruit_feather_can:flash=8388608_2097152,freq=250"
 OUT="$REPO/build"
 BIN="$OUT/can_receiver_display.ino.bin"
 
