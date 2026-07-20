@@ -3,7 +3,7 @@
 # Usage: tools/build_splash.sh [fps] [quality]   (defaults: 15 fps, q=4)
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$REPO/mazdaspeed_splash.mp4"
+SRC="$REPO/splash2.mp4"
 OUT="$REPO/Arduino/can_receiver_display/data/splash"
 FPS="${1:-15}"
 Q="${2:-4}"
