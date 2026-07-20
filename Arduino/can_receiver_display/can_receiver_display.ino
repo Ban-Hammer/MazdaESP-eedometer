@@ -13,13 +13,6 @@
 #define DM_FONT "dm40"
 #define SPORT_MODE_FONT "mazdaspeed18"
 
-// ---- DEMO MODE ---------------------------------------------------------------
-// When defined, the display runs a self-contained animation (speed sweeps,
-// gear cycling, sport-mode label) instead of reading the CAN bus. Comment this
-// line out to return to normal CAN-driven operation.
-// #define DEMO_MODE
-// ------------------------------------------------------------------------------
-
 #define CS_PIN 19
 
 // ---- Backlight (TFT BLK pin, PWM dimming) ------------------------------------
@@ -121,32 +114,35 @@ TFT_eSprite mazdaspeed = TFT_eSprite(&tft);
 TFT_eSprite dm = TFT_eSprite(&tft);
 
 // Draw OTA status to the TFT while an update session runs (passed to ota::service).
+// Status text/bar sit near the TOP of the panel.
 void otaUi(ota::Ui phase, uint8_t pct, const char* msg) {
+  const int TOP_Y = 40;    // text baseline (MC_DATUM = centred on this Y)
+  const int BAR_Y = 66;    // progress bar, just below the text
   switch (phase) {
     case ota::Ui::STARTED:
       tft.fillScreen(TFT_BLACK);
       tft.setTextColor(TFT_WHITE, TFT_BLACK);
       tft.setTextDatum(MC_DATUM);
-      tft.drawString("Updating...", tft.width() / 2, tft.height() / 2 - 20, 4);
+      tft.drawString("Updating...", tft.width() / 2, TOP_Y, 4);
       tft.setTextDatum(TL_DATUM);
       break;
     case ota::Ui::PROGRESS: {
-      int w = tft.width() - 40, x = 20, y = tft.height() / 2 + 10;
-      tft.drawRect(x, y, w, 16, TFT_WHITE);
-      tft.fillRect(x + 1, y + 1, (w - 2) * pct / 100, 14, TFT_GREEN);
+      int w = tft.width() - 40, x = 20;
+      tft.drawRect(x, BAR_Y, w, 16, TFT_WHITE);
+      tft.fillRect(x + 1, BAR_Y + 1, (w - 2) * pct / 100, 14, TFT_GREEN);
       break;
     }
     case ota::Ui::SUCCESS:
       tft.fillScreen(TFT_BLACK);
       tft.setTextDatum(MC_DATUM);
-      tft.drawString("Rebooting...", tft.width() / 2, tft.height() / 2, 4);
+      tft.drawString("Rebooting...", tft.width() / 2, TOP_Y, 4);
       tft.setTextDatum(TL_DATUM);
       break;
     case ota::Ui::FAILED:
       tft.fillScreen(TFT_BLACK);
       tft.setTextColor(TFT_RED, TFT_BLACK);
       tft.setTextDatum(MC_DATUM);
-      tft.drawString(msg ? msg : "Update failed", tft.width() / 2, tft.height() / 2, 4);
+      tft.drawString(msg ? msg : "Update failed", tft.width() / 2, TOP_Y, 4);
       tft.setTextDatum(TL_DATUM);
       delay(1500);
       // Force a full redraw of the normal display when the session resumes.
@@ -206,10 +202,7 @@ void setup() {
   // RP2040), turning a wedge into a self-recovery instead of a USB reflash. Fed in
   // loop(), splashInterFrame() (per splash frame), and ota's block/header loops —
   // any blocking op that can run near 8 s must feed it (see wdt_reset calls).
-  // Skipped in DEMO_MODE (its long animation delays would trip the 8 s window).
-#ifndef DEMO_MODE
   rp2040.wdt_begin(8000);
-#endif
 
   Serial.begin(115200);
   // while (!Serial) delay(10);
@@ -372,59 +365,11 @@ void fadeInFromBlack() {
   mazdaspeed.setTextColor(TFT_ORANGE, TFT_BLACK);
 }
 
-#ifdef DEMO_MODE
-// One full pass of the animation. loop() calls this repeatedly so it runs forever.
-void runDemo() {
-  // Baseline: P, no sport
-  sport = false; drawSport();
-  gear = "P"; current_gear = 1; drawSpeedGear();
-  delay(600);
-
-  // Speed sweep 0 -> 200 -> 0 (km/h)
-  for (int s = 0;   s <= 200; s += 2) { speed = s; drawSpeedGear(); delay(25); }
-  delay(500);
-  for (int s = 200; s >= 0;   s -= 2) { speed = s; drawSpeedGear(); delay(25); }
-  delay(500);
-
-  // Selector cycle: P -> R -> N
-  gear = "R"; drawSpeedGear(); delay(800);
-  gear = "N"; drawSpeedGear(); delay(800);
-
-  // Drive: shift up 1..6 then back down
-  gear = "D";
-  for (int g = 1; g <= 6; g++) { current_gear = g; drawSpeedGear(); delay(550); }
-  for (int g = 6; g >= 1; g--) { current_gear = g; drawSpeedGear(); delay(550); }
-
-  // Back to P
-  gear = "P"; drawSpeedGear(); delay(600);
-
-  // Sport mode: MAZDASPEED label + manual "M" indicator + a quick D-gear speed blip
-  sport = true; drawSport();
-  manual_gear = true;  // demo only: show the "M" alongside MAZDASPEED
-  gear = "D"; current_gear = 3; drawSpeedGear();
-  for (int s = 0;   s <= 140; s += 3) { speed = s; drawSpeedGear(); delay(20); }
-  for (int s = 140; s >= 0;   s -= 3) { speed = s; drawSpeedGear(); delay(20); }
-  sport = false; drawSport();
-  manual_gear = false;
-  gear = "P"; drawSpeedGear();
-  delay(800);
-
-  // Backlight sweep so brightness control is visible without the CAN bus.
-  for (int b = 255; b >= NIGHT_PWM_MIN; b -= 4) { analogWrite(BL_PIN, b); delay(15); }
-  for (int b = NIGHT_PWM_MIN; b <= 255; b += 4) { analogWrite(BL_PIN, b); delay(15); }
-}
-#endif
-
 void loop() {
   rp2040.wdt_reset();                        // feed the watchdog each iteration
 
   // Handle any wireless update first; blocks + owns the screen during a session.
   ota::service(otaUi);
-
-#ifdef DEMO_MODE
-  runDemo();
-  return;
-#endif
 
   updateBacklight();
 
