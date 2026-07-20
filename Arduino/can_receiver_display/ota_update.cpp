@@ -1,6 +1,8 @@
 #include "ota_update.h"
 #include <Arduino.h>
 #include <Updater.h>          // arduino-pico OTA Updater (part of the Pico core)
+#include <FS.h>
+#include <LittleFS.h>
 #include <ota_protocol.h>
 #include <string.h>
 
@@ -10,8 +12,18 @@ namespace {
   const char*  g_ver = "?";
   FrameParser  g_parser;
 
+  const char*    TMP_PATH = "/.upload.tmp";
   const uint32_t BYTE_TIMEOUT_MS  = 3000;   // stall detection during data phase
   const uint32_t FRAME_TIMEOUT_MS = 5000;   // waiting for HEADER after ACK
+
+  bool valid_path(const char* p) {
+    if (!p || p[0] != '/') return false;
+    if (strstr(p, "..")) return false;
+    return strlen(p) <= 63;
+  }
+
+  // A sink consumes one decoded block; returns true on success.
+  typedef bool (*BlockSink)(void* ctx, const uint8_t* buf, size_t n);
 
   void send_frame(MsgType t, const uint8_t* payload, size_t len) {
     uint8_t wire[FRAME_OVERHEAD + MAX_PAYLOAD];
@@ -30,33 +42,82 @@ namespace {
     return got;
   }
 
-  // Blocking data phase: receive img_len raw bytes one OTA_BLOCK at a time, ACKing
-  // each block so the sender never gets ahead of our flash writes (flow control).
-  // Returns true iff the whole image was staged AND the CRC matched. On any failure
-  // it sends the appropriate RESULT and returns false (nothing committed).
-  bool receive_and_stage(uint32_t img_len, uint32_t img_crc, ota::UiCallback cb) {
-    if (img_len == 0)              { send_result(ResultCode::BAD_LENGTH); return false; }
-    if (!Update.begin(img_len))    { send_result(ResultCode::FLASH_ERROR); return false; }
-    send_frame(MsgType::ACK, nullptr, 0);   // header-ack: flash ready, send block 0
-
+  // Receive `len` raw bytes in OTA_BLOCK chunks under per-block flow control, feeding
+  // each block to `sink` and accumulating CRC32. Sends an ACK after each written block
+  // (the sender waits for it, so no bytes arrive during the write and the FIFO can't
+  // overrun). Caller sends the header-ACK and opens/finalizes the sink. Returns:
+  //   OK on full receive + crc match; CRC_MISMATCH; TIMEOUT (stall); WRITE_ERROR (sink).
+  ResultCode receive_blocks(uint32_t len, uint32_t crc, BlockSink sink, void* ctx,
+                            ota::UiCallback cb) {
     static uint8_t buf[OTA_BLOCK];   // static: too big for this call's stack
-    uint32_t crc = crc32_init();
-    uint32_t remaining = img_len;
-    uint8_t  last_pct = 255;
+    uint32_t acc = crc32_init(), remaining = len; uint8_t last_pct = 255;
     while (remaining) {
       size_t chunk = remaining < OTA_BLOCK ? remaining : OTA_BLOCK;
-      // The sender waits for our previous ACK, so no bytes arrive during Update.write
-      // and the whole block streams into the FIFO faster than we can be overrun.
-      if (read_exact(buf, chunk, BYTE_TIMEOUT_MS) != chunk) { send_result(ResultCode::TIMEOUT); return false; }
-      if (Update.write(buf, chunk) != chunk) { send_result(ResultCode::FLASH_ERROR); return false; }
-      crc = crc32_update(crc, buf, chunk);
+      if (read_exact(buf, chunk, BYTE_TIMEOUT_MS) != chunk) return ResultCode::TIMEOUT;
+      if (!sink(ctx, buf, chunk)) return ResultCode::WRITE_ERROR;
+      acc = crc32_update(acc, buf, chunk);
       remaining -= chunk;
       send_frame(MsgType::ACK, nullptr, 0);   // block written, send the next one
-      uint8_t pct = (uint8_t)(100u * (uint64_t)(img_len - remaining) / img_len);
-      if (cb && pct != last_pct) { cb(ota::Ui::PROGRESS, pct, "Updating"); last_pct = pct; }
+      if (cb) { uint8_t pct = (uint8_t)(100u * (uint64_t)(len - remaining) / len);
+                if (pct != last_pct) { cb(ota::Ui::PROGRESS, pct, "Updating"); last_pct = pct; } }
     }
-    if (crc32_final(crc) != img_crc) { send_result(ResultCode::CRC_MISMATCH); return false; }
+    return (crc32_final(acc) == crc) ? ResultCode::OK : ResultCode::CRC_MISMATCH;
+  }
+
+  bool updateSink(void*, const uint8_t* b, size_t n) { return Update.write((uint8_t*)b, n) == n; }
+  bool fileSink(void* ctx, const uint8_t* b, size_t n) { return ((File*)ctx)->write(b, n) == n; }
+
+  // Firmware data phase: stage the incoming image into flash via the Updater. Keeps the
+  // same header-ACK-then-blocks wire behavior. Returns true iff staged + CRC matched.
+  bool receive_and_stage(uint32_t img_len, uint32_t img_crc, ota::UiCallback cb) {
+    if (img_len == 0)           { send_result(ResultCode::BAD_LENGTH); return false; }
+    if (!Update.begin(img_len)) { send_result(ResultCode::FLASH_ERROR); return false; }
+    send_frame(MsgType::ACK, nullptr, 0);                 // header-ack: send block 0
+    ResultCode rc = receive_blocks(img_len, img_crc, updateSink, nullptr, cb);
+    if (rc != ResultCode::OK) { send_result(rc); return false; }
     return true;
+  }
+
+  // ---- LittleFS file operations (no reboot; do not touch the TFT) ----
+
+  void handle_list(const char* path) {
+    Dir d = LittleFS.openDir(path);
+    uint8_t p[MAX_PAYLOAD];
+    while (d.next()) {
+      String fn = d.fileName();
+      const char* nm = fn.c_str();
+      const char* slash = strrchr(nm, '/'); if (slash) nm = slash + 1;   // basename
+      if (!strcmp(nm, TMP_PATH + 1)) continue;                           // hide temp file
+      size_t n = list_entry_encode(d.isDirectory(), (uint32_t)d.fileSize(), nm, p, sizeof(p));
+      if (n) send_frame(MsgType::LIST_ENTRY, p, n);
+    }
+    FSInfo fi; LittleFS.info(fi);
+    uint8_t e[8]; header_encode((uint32_t)fi.totalBytes, (uint32_t)fi.usedBytes, e);
+    send_frame(MsgType::LIST_END, e, 8);
+  }
+
+  void handle_write(const uint8_t* payload, size_t plen, ota::UiCallback cb) {
+    uint32_t len, crc; char path[64];
+    if (!writehdr_decode(payload, plen, &len, &crc, path, sizeof(path)) || !valid_path(path)
+        || len == 0) { send_result(ResultCode::WRITE_ERROR); return; }
+    LittleFS.remove(TMP_PATH);
+    File f = LittleFS.open(TMP_PATH, "w");
+    if (!f) { send_result(ResultCode::WRITE_ERROR); return; }
+    send_frame(MsgType::ACK, nullptr, 0);                 // header-ack
+    ResultCode rc = receive_blocks(len, crc, fileSink, &f, cb);
+    f.close();
+    if (rc != ResultCode::OK) { LittleFS.remove(TMP_PATH); send_result(rc); return; }
+    LittleFS.remove(path);                                // ensure clean replace
+    send_result(LittleFS.rename(TMP_PATH, path) ? ResultCode::OK : ResultCode::WRITE_ERROR);
+  }
+
+  void handle_delete(const uint8_t* payload, size_t plen) {
+    char path[64];
+    size_t n = plen < sizeof(path) ? plen : sizeof(path) - 1;
+    memcpy(path, payload, n); path[n] = 0;
+    if (!valid_path(path))      { send_result(ResultCode::WRITE_ERROR); return; }
+    if (!LittleFS.exists(path)) { send_result(ResultCode::NOT_FOUND); return; }
+    send_result(LittleFS.remove(path) ? ResultCode::OK : ResultCode::WRITE_ERROR);
   }
 
   // Runs after an ENTER_UPDATE frame. Drives header -> data -> verify -> commit.
@@ -128,6 +189,18 @@ void service(UiCallback cb) {
         run_session(cb);                                // blocks; reboots on success
         frameparser_reset(&g_parser);
         return;
+      case MsgType::LIST_REQ: {
+        char path[64]; size_t n = f.payload_len < sizeof(path) ? f.payload_len : sizeof(path) - 1;
+        memcpy(path, f.payload, n); path[n] = 0;
+        handle_list(valid_path(path) ? path : "/");
+        break;
+      }
+      case MsgType::WRITE_FILE:
+        handle_write(f.payload, f.payload_len, cb);
+        break;
+      case MsgType::DELETE_FILE:
+        handle_delete(f.payload, f.payload_len);
+        break;
       default:
         break;
     }
