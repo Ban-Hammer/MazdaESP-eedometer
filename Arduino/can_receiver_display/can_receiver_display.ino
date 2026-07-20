@@ -6,7 +6,7 @@
 #include "ota_update.h"
 #include "splash.h"
 
-#define FW_VERSION "v0.9.9"
+#define FW_VERSION "v1.0"
 
 #define SPEED_FONT "speed112_2"
 #define GEAR_FONT "gear96"
@@ -28,7 +28,7 @@
 #define NIGHT_LEVEL_MIN     0x0D   // dimmest dimmer-wheel value
 #define NIGHT_LEVEL_MAX     0x64   // brightest dimmer-wheel value
 #define NIGHT_PWM_MIN       1      // display PWM at dimmest night (readable floor)
-#define NIGHT_PWM_MAX       50    // display PWM at brightest night
+#define NIGHT_PWM_MAX       25    // display PWM at brightest night
 
 // Sport mode on CAN 0x09E, last byte (SavvyCAN D8 = rxBuf[7]): bit 0x10 = on.
 #define SPORT_ID            0x09E
@@ -66,11 +66,11 @@
 
 // Orange MAZDASPEED label band (between the speed and the gear).
 #define SPORT_BAND_X        0
-#define SPORT_BAND_Y        110
+#define SPORT_BAND_Y        105
 #define SPORT_BAND_W        240
 #define SPORT_BAND_H        15
-#define SPORT_TEXT_X        10
-#define SPORT_TEXT_Y        10
+#define SPORT_TEXT_X        30
+#define SPORT_TEXT_Y        105
 
 long unsigned int rxId;
 unsigned char len = 0;
@@ -335,7 +335,7 @@ void drawSport() {
   tft.fillRect(SPORT_BAND_X, SPORT_BAND_Y, SPORT_BAND_W, SPORT_BAND_H, TFT_BLACK);
   if (sport) {
     tft.setCursor(SPORT_TEXT_X, SPORT_TEXT_Y);
-    mazdaspeed.printToSprite("MAZDASPEED");
+    mazdaspeed.printToSprite("SPEED");
   }
   prevSportState = st;
 }
