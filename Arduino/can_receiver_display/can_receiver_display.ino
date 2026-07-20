@@ -6,7 +6,7 @@
 #include "ota_update.h"
 #include "splash.h"
 
-#define FW_VERSION "2026.07.19-ota-test"
+#define FW_VERSION "v0.9.2"
 
 #define SPEED_FONT "speed112_2"
 #define GEAR_FONT "gear96"
@@ -34,18 +34,26 @@
 #define DAY_MODE_THRESHOLD  0xA0   // D6 at/above this => daylight => full brightness
 #define NIGHT_LEVEL_MIN     0x0D   // dimmest dimmer-wheel value
 #define NIGHT_LEVEL_MAX     0x64   // brightest dimmer-wheel value
-#define NIGHT_PWM_MIN       5      // display PWM at dimmest night (readable floor)
-#define NIGHT_PWM_MAX       100    // display PWM at brightest night
+#define NIGHT_PWM_MIN       1      // display PWM at dimmest night (readable floor)
+#define NIGHT_PWM_MAX       50    // display PWM at brightest night
 
 // Sport mode on CAN 0x09E, last byte (SavvyCAN D8 = rxBuf[7]): bit 0x10 = on.
 #define SPORT_ID            0x09E
 #define SPORT_IDX           7      // SavvyCAN D8 = last byte
 #define SPORT_MASK          0x10   // bit set => sport mode engaged
 
+// ---- Display stabilization (stop readout flicker at value boundaries) --------
+// SPEED_HYST: raw-count (0.01 km/h) deadband past each km/h rounding boundary, so a
+//   real speed sitting on an x.5 value doesn't flip the digit every frame.
+// GEAR_DEBOUNCE: 0x228 (D-mode) frames a new gear number must persist (~20ms each)
+//   before it shows, to ignore brief 2<->3 hunting at a shift point.
+#define SPEED_HYST          25
+#define GEAR_DEBOUNCE       4
+
 // ---- Screen orientation & label layout ---------------------------------------
 // Every on-screen position lives here so the display can be re-aimed without
 // hunting through the draw code. Panel is 240x240 (see TFT_eSPI User_Setup.h).
-#define SCREEN_ROTATION     0      // tft.setRotation(): 0/1/2/3 = 0/90/180/270 deg
+#define SCREEN_ROTATION     2      // tft.setRotation(): 0/1/2/3 = 0/90/180/270 deg
 
 // Speed digits (top). NUDGE_X shifts wide / leading-"1" numbers left so the
 // leading digit stays put (see drawSpeedGear()).
@@ -86,6 +94,8 @@ String prevGear = "";
 unsigned int current_gearRaw = 0;
 int current_gear = 1;
 int prevCurrentGear = -1;
+int gearCand = -1;      // gear-number debounce: candidate value + frames it has held
+int gearCandN = 0;
 
 bool manual_gear = false;
 bool prevManual = false;
@@ -198,6 +208,7 @@ void setup() {
     Serial.println("LittleFS init failed!");
   } else {
     Serial.println("LittleFS available!");
+    ota::cleanupStaging();   // sweep spent OTA leftovers (/firmware.bin, /otacommand.bin)
   }
 
   const char* fontFiles[] = {
@@ -380,9 +391,13 @@ void loop() {
     CAN0.readMsgBuf(&rxId, &len, rxBuf);
 
     if (rxId == 0x202) {
-      // read the speed and convert to int with rounding
+      // Speed is raw * 0.01 km/h. Re-round to whole km/h only when raw clears the
+      // current cell by SPEED_HYST past the .5 boundary, so a steady x.5 speed doesn't
+      // flicker the digit (hysteresis). Larger jumps still update immediately.
       speedRaw = (rxBuf[2] << 8) | rxBuf[3];
-      speed = (speedRaw + 50) / 100;
+      long hi = (long)speed * 100 + 50 + SPEED_HYST;
+      long lo = (long)speed * 100 - 50 - SPEED_HYST;
+      if ((long)speedRaw >= hi || (long)speedRaw < lo) speed = (speedRaw + 50) / 100;
     }
 
     if (rxId == 0x228) {
@@ -402,7 +417,14 @@ void loop() {
         case 0x04:
           gear = "D";
           current_gearRaw = rxBuf[4] & 0x1E;
-          current_gear = current_gearRaw >> 1;
+          // Debounce: a new gear number must persist GEAR_DEBOUNCE frames before it
+          // shows, so brief 2<->3 hunting at a shift point doesn't flicker the digit.
+          {
+            int cg = current_gearRaw >> 1;
+            if (cg == current_gear)  { gearCand = cg; gearCandN = 0; }
+            else if (cg == gearCand) { if (++gearCandN >= GEAR_DEBOUNCE) current_gear = cg; }
+            else                     { gearCand = cg; gearCandN = 1; }
+          }
           break;
       }
     }
@@ -418,9 +440,6 @@ void loop() {
     if (rxId == BRIGHT_ID) {
       targetBrightness = computeTargetBrightness(rxBuf[BRIGHT_LEVEL_IDX],
                                                  rxBuf[DAY_MODE_IDX]);
-      Serial.print("bright level=0x"); Serial.print(rxBuf[BRIGHT_LEVEL_IDX], HEX);
-      Serial.print(" day=0x");         Serial.print(rxBuf[DAY_MODE_IDX], HEX);
-      Serial.print(" -> target=");     Serial.println(targetBrightness);
     }
 
     if (rxId == SPORT_ID) {

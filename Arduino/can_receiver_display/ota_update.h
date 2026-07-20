@@ -17,4 +17,9 @@ namespace ota {
   // it blocks to receive the image while the caller has paused the display).
   // On a committed update it reboots and does not return. `cb` may be null.
   void service(UiCallback cb);
+
+  // Remove the arduino-pico OTA staging leftovers (/firmware.bin, /otacommand.bin)
+  // if present. Safe to call once at boot AFTER LittleFS.begin(): if this code is
+  // running, any prior OTA already applied, so both files are inert.
+  void cleanupStaging();
 }

@@ -173,6 +173,14 @@ void begin(const char* fw_version, unsigned long baud) {
   frameparser_reset(&g_parser);
 }
 
+void cleanupStaging() {
+  // Bootloader applies /firmware.bin then raw-erases the /otacommand.bin block, but
+  // never removes either file cleanly. Once the app is running the apply is done, so
+  // sweep the leftovers to free space and clear the dangling command entry.
+  if (LittleFS.exists("/firmware.bin"))   LittleFS.remove("/firmware.bin");
+  if (LittleFS.exists("/otacommand.bin")) LittleFS.remove("/otacommand.bin");
+}
+
 void service(UiCallback cb) {
   ParsedFrame f;
   while (Serial1.available()) {
