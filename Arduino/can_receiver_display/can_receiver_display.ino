@@ -274,6 +274,14 @@ void setup() {
   // which runs only after this, so turn it on here or the splash renders dark.
   analogWrite(BL_PIN, 255);
   splash::play(tft, 15, splashInterFrame);   // ~2s MJPEG splash (aborts if moving)
+
+  // Continue the splash's fade-to-black: paint the initial speed/gear while the
+  // backlight is off, then let loop()'s updateBacklight() ramp it up from 0 so the
+  // main display fades in from black instead of popping in.
+  analogWrite(BL_PIN, 0);
+  currentBrightness = 0;
+  drawSpeedGear();
+  drawSport();
 }
 
 // Redraw speed and gear from the current global state, only when they change.
