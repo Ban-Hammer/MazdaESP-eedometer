@@ -6,7 +6,7 @@
 #include "ota_update.h"
 #include "splash.h"
 
-#define FW_VERSION "v0.9.2"
+#define FW_VERSION "v0.9.9"
 
 #define SPEED_FONT "speed112_2"
 #define GEAR_FONT "gear96"
@@ -68,16 +68,16 @@
 // printToSprite built a 2px-too-short sprite; fixed by patching the .vlw descent
 // to 9 -- not a position bug.)
 #define GEAR_X              0
-#define GEAR_Y              158    // top of the big gear letter/number
+#define GEAR_Y              125    // top of the big gear letter/number
 #define GEAR_M_Y            (GEAR_Y + 35)  // manual "M" indicator, below the D
 
 // Orange MAZDASPEED label band (between the speed and the gear).
 #define SPORT_BAND_X        0
-#define SPORT_BAND_Y        122
+#define SPORT_BAND_Y        110
 #define SPORT_BAND_W        240
-#define SPORT_BAND_H        30
-#define SPORT_TEXT_X        35
-#define SPORT_TEXT_Y        126
+#define SPORT_BAND_H        15
+#define SPORT_TEXT_X        10
+#define SPORT_TEXT_Y        10
 
 long unsigned int rxId;
 unsigned char len = 0;
@@ -158,6 +158,7 @@ void otaUi(ota::Ui phase, uint8_t pct, const char* msg) {
 // Called once per splash frame: keep the board updatable, and abort the splash the
 // moment real CAN data shows the car is moving.
 static bool splashInterFrame() {
+  rp2040.wdt_reset();                      // feed the watchdog during the boot splash
   ota::service(otaUi);                     // an OTA mid-splash takes over + reboots
   if (!digitalRead(CAN0_INT)) {            // non-blocking CAN peek
     CAN0.readMsgBuf(&rxId, &len, rxBuf);
@@ -200,6 +201,15 @@ void setup() {
   // Update-mode-first: bring up the OTA listener before anything that could
   // crash (CAN/TFT/fonts), so the board stays remotely recoverable.
   ota::begin(FW_VERSION);
+
+  // Hardware watchdog: auto-reboot if the firmware hangs for 8 s (max ~8.3 s on
+  // RP2040), turning a wedge into a self-recovery instead of a USB reflash. Fed in
+  // loop(), splashInterFrame() (per splash frame), and ota's block/header loops —
+  // any blocking op that can run near 8 s must feed it (see wdt_reset calls).
+  // Skipped in DEMO_MODE (its long animation delays would trip the 8 s window).
+#ifndef DEMO_MODE
+  rp2040.wdt_begin(8000);
+#endif
 
   Serial.begin(115200);
   // while (!Serial) delay(10);
@@ -406,6 +416,8 @@ void runDemo() {
 #endif
 
 void loop() {
+  rp2040.wdt_reset();                        // feed the watchdog each iteration
+
   // Handle any wireless update first; blocks + owns the screen during a session.
   ota::service(otaUi);
 

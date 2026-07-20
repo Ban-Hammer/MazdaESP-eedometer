@@ -52,6 +52,7 @@ namespace {
     static uint8_t buf[OTA_BLOCK];   // static: too big for this call's stack
     uint32_t acc = crc32_init(), remaining = len; uint8_t last_pct = 255;
     while (remaining) {
+      rp2040.wdt_reset();            // a full transfer can exceed the 8s watchdog window
       size_t chunk = remaining < OTA_BLOCK ? remaining : OTA_BLOCK;
       if (read_exact(buf, chunk, BYTE_TIMEOUT_MS) != chunk) return ResultCode::TIMEOUT;
       if (!sink(ctx, buf, chunk)) return ResultCode::WRITE_ERROR;
@@ -131,6 +132,7 @@ namespace {
     // Wait for the HEADER frame.
     uint32_t start = millis(); ParsedFrame f; bool got_header = false;
     while (millis() - start < FRAME_TIMEOUT_MS) {
+      rp2040.wdt_reset();            // header wait can approach the watchdog window
       if (!Serial1.available()) continue;
       if (frameparser_push(&g_parser, (uint8_t)Serial1.read(), &f) == ParseStatus::FRAME_READY
           && f.type == MsgType::HEADER && f.payload_len == 8) { got_header = true; break; }
