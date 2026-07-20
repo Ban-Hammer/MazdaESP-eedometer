@@ -275,13 +275,9 @@ void setup() {
   analogWrite(BL_PIN, 255);
   splash::play(tft, 15, splashInterFrame);   // ~2s MJPEG splash (aborts if moving)
 
-  // Continue the splash's fade-to-black: paint the initial speed/gear while the
-  // backlight is off, then let loop()'s updateBacklight() ramp it up from 0 so the
-  // main display fades in from black instead of popping in.
-  analogWrite(BL_PIN, 0);
-  currentBrightness = 0;
-  drawSpeedGear();
-  drawSport();
+  // Fade the initial speed/gear in from black to continue the splash's fade-out.
+  // This ramps the glyph COLOURS (not the backlight), so brightness is unchanged.
+  fadeInFromBlack();
 }
 
 // Redraw speed and gear from the current global state, only when they change.
@@ -339,6 +335,31 @@ void drawSport() {
     mazdaspeed.printToSprite("MAZDASPEED");
   }
   prevSportState = st;
+}
+
+// Fade the initial speed/gear glyphs up from black by ramping their text COLOURS
+// (backlight untouched). Redraws the current state each step so the numbers/letters
+// materialize from the black the splash left behind.
+void fadeInFromBlack() {
+  const int STEPS = 16;
+  for (int i = 1; i <= STEPS; i++) {
+    uint8_t v = (uint8_t)(255 * i / STEPS);
+    uint16_t white  = tft.color565(v, v, v);
+    uint16_t orange = tft.color565(v, (uint8_t)(v * 165 / 255), 0);
+    speed_spr.setTextColor(white, TFT_BLACK);
+    gear_spr.setTextColor(white, TFT_BLACK);
+    dm.setTextColor(white, TFT_BLACK);
+    mazdaspeed.setTextColor(orange, TFT_BLACK);
+    prevSpeed = -1; prevGear = ""; prevCurrentGear = -1; prevSportState = -1;
+    drawSpeedGear();
+    drawSport();
+    delay(30);
+  }
+  // Land on the exact final colours for normal operation.
+  speed_spr.setTextColor(TFT_WHITE, TFT_BLACK);
+  gear_spr.setTextColor(TFT_WHITE, TFT_BLACK);
+  dm.setTextColor(TFT_WHITE, TFT_BLACK);
+  mazdaspeed.setTextColor(TFT_ORANGE, TFT_BLACK);
 }
 
 #ifdef DEMO_MODE
