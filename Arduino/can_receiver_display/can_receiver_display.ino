@@ -18,13 +18,32 @@
 // ---- Backlight (TFT BLK pin, PWM dimming) ------------------------------------
 #define BL_PIN 10        // GP10 -> TFT BLK (free; not SPI GP2-6 or CAN GP19/22)
 
-// Dashboard illumination on CAN 0x09F (SavvyCAN D-columns are 1-based; Dn = rxBuf[n-1]):
-//   D2 (rxBuf[1]) = night dimmer level, 0x0D..0x64
-//   D6 (rxBuf[5]) = day-mode byte, 0x48 (night) -> 0xC8 (day)
+// Day/night + dimming come from TWO CAN frames, combined so the screen is BRIGHT when
+// either the manual day-mode toggle is set OR the headlamps aren't truly lit, and DIM
+// only when the lamps are genuinely on for the dark and day-mode isn't forced:
+//
+//   bright  if  (0x09F D6 day-mode bit set)  OR  (0x09A headlamps NOT engaged)
+//   dim     otherwise (scale the 0x09F dimmer level)
+//
+//  * DIMMER LEVEL: 0x09F D2 (rxBuf[1]), 0x0D..0x64 = the dashboard dimmer wheel.
+//
+//  * DAY-MODE toggle: 0x09F D6 (rxBuf[5]) bit 0x80. The dashboard day/night button
+//    forces this to day; it must override the lamp dimming (that override was the
+//    missing piece when day/night ran on the lamps alone).
+//
+//  * HEADLAMP state: 0x09A D1 (rxBuf[0]). Verified live: 0x00 off, 0x10 daytime running
+//    lights / headlamp switch on but bright out, 0x30 low beam actually lit for the
+//    dark (= 0x10 + 0x20), 0xC0 high beam. Crucially the car reports 0x10 (not 0x30) in
+//    daylight even with the headlight switch on, so masking 0x20/0xC0 keeps the screen
+//    bright when low beams are legally on in daylight, and dims only when they light up
+//    for real darkness. 0x10 (DRL) is deliberately left out of the mask.
 #define BRIGHT_ID           0x09F
 #define BRIGHT_LEVEL_IDX    1      // SavvyCAN D2 = night dimmer level
 #define DAY_MODE_IDX        5      // SavvyCAN D6 = day-mode byte
-#define DAY_MODE_THRESHOLD  0xA0   // D6 at/above this => daylight => full brightness
+#define DAY_MODE_MASK       0x80   // D6 bit set => day-mode forced => full brightness
+#define LAMP_ID             0x09A  // headlamp status frame
+#define LAMP_IDX            0      // D1 = lamp-status byte
+#define LAMP_MASK           0xE0   // 0x20 (low beam) + 0xC0 (high beam); excludes 0x10 DRL
 #define NIGHT_LEVEL_MIN     0x0D   // dimmest dimmer-wheel value
 #define NIGHT_LEVEL_MAX     0x64   // brightest dimmer-wheel value
 #define NIGHT_PWM_MIN       1      // display PWM at dimmest night (readable floor)
@@ -62,7 +81,10 @@
 // to 9 -- not a position bug.)
 #define GEAR_X              0
 #define GEAR_Y              125    // top of the big gear letter/number
-#define GEAR_M_Y            (GEAR_Y + 35)  // manual "M" indicator, below the D
+// D-mode auto/manual indicator (small dm40 "D", or "M" when the manual gate is
+// engaged), placed to the RIGHT of the big gear number. GEAR_DM_X is its left edge;
+// the gear96 digit ends near x=71 at GEAR_X=0, so keep this clear of it.
+#define GEAR_DM_X           90
 
 // Orange MAZDASPEED label band (between the speed and the gear).
 #define SPORT_BAND_X        0
@@ -99,6 +121,12 @@ int prevSportState = -1;  // -1 = unknown, 0 = off, 1 = on
 // is readable.
 uint8_t currentBrightness = 255;
 uint8_t targetBrightness  = 255;   // brightness we are ramping toward
+
+// Day/night inputs (see BRIGHT_ID / LAMP_ID). Default to daylight so an unlit dash
+// (e.g. no frames yet) shows full brightness rather than dim.
+bool    lampsOn     = false;             // 0x09A: low/high beam actually lit
+bool    dayMode     = false;             // 0x09F D6: day-mode toggle forces bright
+uint8_t dimmerLevel = NIGHT_LEVEL_MAX;   // 0x09F D2: dashboard dimmer wheel level
 
 #define RAMP_INTERVAL_MS 25    // how often the ramp advances
 #define RAMP_STEP        4     // PWM counts per ramp tick
@@ -166,11 +194,13 @@ static bool splashInterFrame() {
   return false;
 }
 
-// Map a 0x09F frame to a target backlight PWM duty (0-255).
-// Daylight mode -> full; otherwise scale the night dimmer level, clamped so the
-// screen never goes fully dark.
-uint8_t computeTargetBrightness(uint8_t level, uint8_t dayByte) {
-  if (dayByte >= DAY_MODE_THRESHOLD) return 255;
+// Target backlight PWM duty (0-255) from the current day/night inputs.
+// Bright (full) if day-mode is forced OR the headlamps aren't truly lit; otherwise
+// scale the night dimmer level, clamped so the screen never goes fully dark. Call
+// whenever any of dayMode / lampsOn / dimmerLevel changes.
+uint8_t computeTargetBrightness() {
+  if (dayMode || !lampsOn) return 255;
+  uint8_t level = dimmerLevel;
   if (level < NIGHT_LEVEL_MIN) level = NIGHT_LEVEL_MIN;
   if (level > NIGHT_LEVEL_MAX) level = NIGHT_LEVEL_MAX;
   return (uint8_t)map(level, NIGHT_LEVEL_MIN, NIGHT_LEVEL_MAX,
@@ -245,6 +275,8 @@ void setup() {
   CAN0.init_Filt(3, 0, 0x009F0000);
   // RXB1 also lets 0x09E (sport-mode flag) through.
   CAN0.init_Filt(4, 0, 0x009E0000);
+  // RXB1 also lets 0x09A (low-beam / lamp status -> day/night) through.
+  CAN0.init_Filt(5, 0, 0x009A0000);
 
   CAN0.setMode(MCP_NORMAL);
 
@@ -300,24 +332,19 @@ void drawSpeedGear() {
       || (gear == "D" && manual_gear != prevManual)) {
     tft.setCursor(GEAR_X, GEAR_Y);
     if (gear == "D") {
-      // gear96 has no "D": draw the big gear NUMBER (space-padded to clear the row,
-      // and shifted right to leave room for the D/M column on the left).
-      gear_spr.printToSprite("   " + (String)(current_gear) + "        ");
-      // Auto/manual indicator column from dm40: "D" on top, "M" under it.
-      // The gear-number sprite above does NOT reach the "M" row, so a released
-      // manual gate would leave the "M" on screen. Clear the M cell every redraw
-      // (its exact footprint via textWidth/fontHeight), then draw "M" only in
-      // manual mode. Order matters: clear the M row here, *before* the "D", so the
-      // "D" repaints its overlapping bottom edge afterwards.
-      // NOTE: single-char printToSprite renders nothing here; the string must be
-      // space-padded (like the gear/speed sprites) so a wide sprite is created.
-      tft.fillRect(GEAR_X, GEAR_M_Y, dm.textWidth(" M  "), dm.fontHeight(), TFT_BLACK);
-      tft.setCursor(GEAR_X, GEAR_Y);
-      dm.printToSprite(" D  ");
-      if (manual_gear) {
-        tft.setCursor(GEAR_X, GEAR_M_Y);
-        dm.printToSprite(" M  ");
-      }
+      // gear96 has no "D": draw the big gear NUMBER in the SAME place as P/R/N (one
+      // leading space), then put the auto/manual indicator to its RIGHT. The wide
+      // trailing padding clears the old digit and blacks out the D/M column, which is
+      // repainted immediately below, so the column can't leave stale pixels.
+      gear_spr.printToSprite(" " + (String)(current_gear) + "            ");
+      // Single auto/manual indicator (dm40) to the RIGHT of the number: "M" when the
+      // manual gate is engaged, otherwise "D" — M replaces D in place (no stacking).
+      // The number's wide trailing padding already blacked out this column, so the
+      // whole-block redraw on any change lets the correct letter paint clean over it.
+      // NOTE: single-char printToSprite renders nothing; the string must be
+      // space-padded so a wide sprite is created.
+      tft.setCursor(GEAR_DM_X, GEAR_Y);
+      dm.printToSprite(manual_gear ? " M  " : " D  ");
     } else {
       // P / R / N in the big gear font (leading/trailing spaces clear the old glyph)
       gear_spr.printToSprite(" " + gear + "            ");
@@ -423,9 +450,15 @@ void loop() {
       manual_gear = (rxBuf[2] & 0x80) != 0;
     }
 
-    if (rxId == BRIGHT_ID) {
-      targetBrightness = computeTargetBrightness(rxBuf[BRIGHT_LEVEL_IDX],
-                                                 rxBuf[DAY_MODE_IDX]);
+    if (rxId == BRIGHT_ID) {                       // 0x09F: dimmer level + day-mode toggle
+      dimmerLevel = rxBuf[BRIGHT_LEVEL_IDX];
+      dayMode = (rxBuf[DAY_MODE_IDX] & DAY_MODE_MASK) != 0;
+      targetBrightness = computeTargetBrightness();
+    }
+
+    if (rxId == LAMP_ID) {                         // 0x09A: headlamp status
+      lampsOn = (rxBuf[LAMP_IDX] & LAMP_MASK) != 0; // low/high beam actually lit
+      targetBrightness = computeTargetBrightness();
     }
 
     if (rxId == SPORT_ID) {

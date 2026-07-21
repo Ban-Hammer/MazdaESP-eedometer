@@ -89,11 +89,18 @@ On success, Serial prints `All fonts are there!` at boot.
 - `BLK` on this module is a high-impedance control input, so GPIO10 drives it directly.
 - Keep `TFT_BL` **undefined** in `User_Setup.h` so the firmware owns the pin (the
   library-update gotcha above resets this too).
-- Brightness auto-tracks the gauge cluster via CAN `0x09F` (see below): the level is
-  mapped to a PWM target and smoothly ramped. Tunable `#define`s in the sketch:
-  `NIGHT_PWM_MIN`/`NIGHT_PWM_MAX` (night range), `DAY_MODE_THRESHOLD`,
-  `RAMP_STEP`/`RAMP_INTERVAL_MS` (ramp speed). On CAN dropout, brightness holds its
-  last value (the "Waiting CAN…" screen dims with everything else).
+- Day vs night is decided by combining two frames (see `computeTargetBrightness()`):
+  the screen is **full bright** when the manual day-mode toggle is set (`0x09F` D6 bit
+  `0x80`) **OR** the headlamps aren't truly lit (`0x09A` D1); it **dims** (scaling the
+  `0x09F` D2 dimmer level) only when low/high beams are actually on for the dark and
+  day-mode isn't forced. Keying night mode on the real lamp state — not the switch
+  position — is deliberate: the car reports a reduced lamp value (`0x10`) in daylight
+  even with the headlight switch on, so the screen stays bright when low beams are
+  legally on in daylight, and DRLs (`0x10`) never dim it.
+- Tunable `#define`s: `NIGHT_PWM_MIN`/`NIGHT_PWM_MAX` (night PWM range),
+  `NIGHT_LEVEL_MIN`/`NIGHT_LEVEL_MAX` (dimmer-wheel input range), `DAY_MODE_MASK`,
+  `LAMP_MASK`, `RAMP_STEP`/`RAMP_INTERVAL_MS` (ramp speed). On CAN dropout brightness
+  holds its last value.
 
 ## CAN Protocol
 
@@ -104,7 +111,8 @@ On success, Serial prints `All fonts are there!` at boot.
 | 0x228  | byte[4] bits 1-4 | Current gear number (when in D) |
 | 0x131  | byte[2] bit 7 (0x80) | Manual (M) mode engaged (byte[1]==0x04 marks the D/M gate; D itself is read from 0x228) |
 | 0x09F  | byte[1] | Dashboard illumination / brightness level, 0x0D (dimmest) … 0x64 (brightest) — night dimmer wheel |
-| 0x09F  | byte[5] | Day-mode byte: 0x48 at night, 0xC8 in full daylight mode (→ display full brightness) |
+| 0x09F  | byte[5] bit 0x80 | Day-mode toggle: set = day (→ force full brightness). Follows the dash day/night button and bright ambient (with lamps off) |
+| 0x09A  | byte[0] | Headlamp status: 0x00 off, 0x10 DRL / switch-on-but-daylight, 0x30 low beam lit, 0xC0 high beam. Night mode masks 0x20+0xC0 (`LAMP_MASK 0xE0`), excluding DRL |
 | 0x09E  | byte[7] bit 0x10 | Sport mode: last byte 0x10 = on, 0x00 = off (→ MAZDASPEED label) |
 
 Note: `0x09F` is `MSG_11` in `mazda_2017.dbc` (present but undecoded upstream); the
@@ -116,7 +124,7 @@ byte meanings above are this project's bench decode. SavvyCAN's 1-based `Dn` col
 Single-file Arduino sketch with interrupt-driven CAN message processing:
 
 1. CAN interrupt triggers on message receipt
-2. Messages filtered by hardware masks: RXB0 (mask 0x02FF) for IDs 0x202 and 0x228; RXB1 (mask 0x07FF, exact match) for 0x131, 0x09F, and 0x09E
+2. Messages filtered by hardware masks: RXB0 (mask 0x02FF) for IDs 0x202 and 0x228; RXB1 (mask 0x07FF, exact match) for 0x131, 0x09F, 0x09E, and 0x09A
 3. Speed and gear data extracted and displayed via TFT_eSprite objects
 
 **LittleFS** is essential for this project to store fonts and other resources. Font files (.vlw) are stored under `/data/` and loaded at startup. These .vlw fonts are essential for smooth anti-aliased text rendering.

@@ -10,6 +10,13 @@ Arduino/libraries/ota_protocol/test/test_state_machine
 # Large local apps (Arduino IDE, SavvyCAN, etc.)
 *.AppImage
 
+# Reverse-engineering inputs kept local, not in the repo:
+#   CAN log exports, DBC databases, and splash source videos. The generated
+#   boot-splash frames (data/splash/*.jpg) ARE tracked — the firmware plays them.
+*.csv
+*.dbc
+*.mp4
+
 # Editor / OS cruft
 .directory
 __pycache__/
