@@ -24,7 +24,18 @@ and cluster changed.
 - Generic 240x240 ST7789 IPS display, driven over PIO SPI at ~60 MHz
 - *Optional: Seeed XIAO ESP32-S3 as a wireless update bridge*
 
-Display wiring: table here The MCP2515 is on the board already (CS=GP19, INT=GP22), running at
+Display wiring (in my case):
+| Display | Adafruit RP2040 CAN |
+|---------|---------------------|
+| SCL | SDA |
+| SDA | SCL |
+| RES | 4 |
+| DC | 6 |
+| CS | 5 |
+| BLK | 10 |
+
+VCC and GND are shared. (I don't know if SDA and SCL should be reverted, but it works for me)
+The MCP2515 is on the board already (CS=GP19, INT=GP22), running at
 500 kbps with a 16 MHz oscillator.
 
 ## What it reads from the bus
@@ -34,14 +45,14 @@ meanings below are this project's own decode.
 
 | CAN ID | Data | Meaning |
 |--------|------|---------|
-| 0x202  | bytes 2-3 | Speed (raw x 0.01 = km/h) |
-| 0x228  | byte 0, bits 0-2 | Gear selector (P=1, R=2, N=3, D=4) |
-| 0x228  | byte 4, bits 1-4 | Current gear number when in D |
-| 0x131  | byte 2, bit 0x80 | Manual mode engaged |
-| 0x09F  | byte 1 | Dashboard dimmer level, 0x0D (dimmest) to 0x64 (brightest) (aka night-mode) |
-| 0x09F  | byte 5, bit 0x80 | Day-mode toggle (forces full brightness) (aka day-mode) |
-| 0x09A  | byte 0 | Headlamp status: 0x00 off, 0x10 DRL, 0x30 low beam, 0xC0 high beam |
-| 0x09E  | byte 7, bit 0x10 | Sport mode |
+| 0x202 | bytes 2-3 | Speed (raw x 0.01 = km/h) |
+| 0x228 | byte 0, bits 0-2 | Gear selector (P=1, R=2, N=3, D=4) |
+| 0x228 | byte 4, bits 1-4 | Current gear number when in D |
+| 0x131 | byte 2, bit 0x80 | Manual mode engaged |
+| 0x09F | byte 1 | Dashboard dimmer level, 0x0D (dimmest) to 0x64 (brightest) (aka night-mode) |
+| 0x09F | byte 5, bit 0x80 | Day-mode toggle (forces full brightness) (aka day-mode) |
+| 0x09A | byte 0 | Headlamp status: 0x00 off, 0x10 DRL, 0x30 low beam, 0xC0 high beam |
+| 0x09E | byte 7, bit 0x10 | Sport mode |
 
 One detail worth knowing: night dimming keys off the *actual* lamp state, not
 the headlight switch. The car reports 0x10 (not 0x30) when the switch is on but
