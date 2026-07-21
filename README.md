@@ -1,16 +1,18 @@
 # Mazda MX-5 ND digital speedometer
 
 A digital speed and gear readout for the Mazda MX-5 ND (2016-2024), built on an
-Adafruit Feather RP2040 CAN Bus and a 240x240 ST7789 TFT. It listens to the
+**Adafruit Feather RP2040 CAN Bus** and a 240x240 **ST7789 TFT**. It listens to the
 car's CAN bus and shows the current speed, the selected gear (with the actual
-gear number in Drive, and an M indicator in manual mode), and a MAZDASPEED
+gear number in Drive, and an M indicator in manual mode), and a SPEED
 banner when sport mode is engaged. Brightness follows the dashboard: it dims
-with the instrument cluster dimmer wheel at night and stays at full brightness
+with the instrument cluster at night and stays at full brightness
 during the day.
 
 Firmware and files can be updated wirelessly through a small companion board (a
-XIAO ESP32-S3) that stays wired to the display, so nothing has to be unscrewed
-from the dash to flash a new version.
+XIAO ESP32-S3 in my case, any other ESP32 with WiFi should fit) that stays wired to the display, for easy firmware flashing.
+
+As far as I'm aware it should be compatible with any ND1/ND2 dash. I have GT automatic, with color-dashboard retrofitted and teste on that.
+Manuals may need some tweaking in gear detecting.
 
 Probably not compatible with the ND3 (2024+) facelift - the electrical system
 and cluster changed.
@@ -20,16 +22,14 @@ and cluster changed.
 - Adafruit Feather RP2040 **CAN Bus** (the variant with the integrated MCP2515),
   overclocked to 250 MHz for JPEG decode headroom during the boot splash
 - Generic 240x240 ST7789 IPS display, driven over PIO SPI at ~60 MHz
-- Optional: Seeed XIAO ESP32-S3 as a wireless update bridge
+- *Optional: Seeed XIAO ESP32-S3 as a wireless update bridge*
 
-Display wiring: MOSI=GP3, SCLK=GP2, CS=GP5, DC=GP6, RST=GP4, BLK=GP10 (PWM
-dimming). The MCP2515 is on the board already (CS=GP19, INT=GP22), running at
+Display wiring: table here The MCP2515 is on the board already (CS=GP19, INT=GP22), running at
 500 kbps with a 16 MHz oscillator.
 
 ## What it reads from the bus
 
-All values were decoded on the bench from recorded traffic; `0x09F` in
-particular is present but undecoded in the public `mazda_2017.dbc`, so the byte
+All values were decoded on the bench from recorded traffic; not all values are present in public DBC files, so the byte
 meanings below are this project's own decode.
 
 | CAN ID | Data | Meaning |
@@ -38,8 +38,8 @@ meanings below are this project's own decode.
 | 0x228  | byte 0, bits 0-2 | Gear selector (P=1, R=2, N=3, D=4) |
 | 0x228  | byte 4, bits 1-4 | Current gear number when in D |
 | 0x131  | byte 2, bit 0x80 | Manual mode engaged |
-| 0x09F  | byte 1 | Dashboard dimmer level, 0x0D (dimmest) to 0x64 (brightest) |
-| 0x09F  | byte 5, bit 0x80 | Day-mode toggle (forces full brightness) |
+| 0x09F  | byte 1 | Dashboard dimmer level, 0x0D (dimmest) to 0x64 (brightest) (aka night-mode) |
+| 0x09F  | byte 5, bit 0x80 | Day-mode toggle (forces full brightness) (aka day-mode) |
 | 0x09A  | byte 0 | Headlamp status: 0x00 off, 0x10 DRL, 0x30 low beam, 0xC0 high beam |
 | 0x09E  | byte 7, bit 0x10 | Sport mode |
 
@@ -95,8 +95,8 @@ them for arbitrary text - a missing glyph renders as an empty box.
 
 ## Wireless updates
 
-`Arduino/xiao_ota_bridge/` is a sketch for a XIAO ESP32-S3 that is permanently
-wired to the RP2040 over UART (921600 baud: XIAO D6 -> GP1, D7 <- GP0, common
+`Arduino/xiao_ota_bridge/` is a sketch for a XIAO ESP32-S3, that is permanently
+wired to the RP2040, to update PR2040 over UART (921600 baud: XIAO D6 -> GP1, D7 <- GP0, common
 ground). It brings up a WPA2 access point with a small web dashboard, from
 which you can:
 
@@ -135,6 +135,6 @@ docs/                           design notes and implementation plans
 ## Development notes
 
 Development happens on the bench against a real speedometer cluster, with CAN
-traffic recorded from the car and replayed through an ESP32 running SavvyCAN.
+traffic recorded from the car and replayed through another ESP32 via SavvyCAN.
 The design docs under `docs/superpowers/` cover the OTA protocol, the splash
 pipeline, and the backlight logic in more detail.
