@@ -138,3 +138,5 @@ Development happens on the bench against a real speedometer cluster, with CAN
 traffic recorded from the car and replayed through another ESP32 via SavvyCAN.
 The design docs under `docs/superpowers/` cover the OTA protocol, the splash
 pipeline, and the backlight logic in more detail.
+
+I started this project 2 years ago, and could not possibly finish it if not Claude (I suck at Arduino C-like language).
