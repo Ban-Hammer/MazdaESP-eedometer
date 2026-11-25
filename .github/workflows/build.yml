@@ -1,0 +1,26 @@
+name: build-esp32
+
+on:
+  push:
+    paths: ['esp32/**', '.github/workflows/build.yml']
+  pull_request:
+    paths: ['esp32/**', '.github/workflows/build.yml']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: esp32
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('esp32/platformio.ini') }}
+      - run: pip install platformio
+      # Compiles the speedometer firmware and the CAN logger. Does not run on hardware.
+      - run: pio run -e esp32dev -e logger
