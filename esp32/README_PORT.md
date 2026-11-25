@@ -55,6 +55,17 @@ grep -v '^#' drive1.csv > drive1_clean.csv
 
 Delete any garbage lines before the `Time Stamp,ID,...` header (the board prints boot noise when the port opens). `# missed frames` lines mean the serial link couldn't keep up; the capture is still usable, just with gaps. Flash `pio run -t upload` (no `-e`) to go back to the speedometer.
 
+## Calibrating the gear display (manual)
+
+Gear is estimated as RPM / speed (RPM is CAN 0x202 bytes 0-1, raw x 0.25). Each gear has a nearly constant ratio, so you measure it once:
+
+1. Flash as normal and open the serial monitor (`pio device monitor`, 115200). It prints `rpm=... kph=... ratio=...` twice a second.
+2. Sanity check: at idle, rpm should read about 700-900. If it is 4x too high or low, the scale in the DBC is wrong for your car; tell me what you see.
+3. Drive each gear at a steady speed for 10+ seconds, clutch fully out, and note the ratio. Take the middle value per gear (ignore shifts and clutch-in readings).
+4. Put the six values in `GEAR_RATIO` in `src/main.cpp` (unused gears stay 0), set `GEAR_CALIBRATED` to 1, reflash.
+
+Adjust `GEAR_TOL`, `GEAR_CONFIRM` and `GEAR_HOLD_MS` if it flickers or lags. Set `GEAR_FROM_RPM` to 0 to return to the original automatic logic.
+
 ## Wireless updates
 
 Copy `src/secrets.h.example` to `src/secrets.h` and set a real password. The ESP32 then hosts a WPA2 AP (`MX5-Speedo`) at `http://192.168.4.1/`:
@@ -82,4 +93,4 @@ Unchanged: speed/gear CAN decoding, brightness logic, debouncing. Removed for th
 - Hardware/task watchdog (`esp_task_wdt`) is not wired up.
 - Power-state handling (sleep when CAN goes silent) is still unimplemented, as in the original.
 - `tools/*.sh` and `CLAUDE.md` in the main repo still describe the RP2040 build.
-- **Manual-transmission gear:** the gear code is still the original automatic-transmission logic (CAN 0x228: selector P/R/N/D, gear number only read while in D). A manual car may not report gear that way, so the gear digit may stay on its default or show nothing useful. Capture the bus (e.g. with SavvyCAN while shifting) and the decode in `handleFrame()` can be pointed at the right frame.
+- **Gear is an estimate:** it comes from RPM / speed (see below), not from a CAN gear frame, so it is blank until calibrated and briefly blank with the clutch in. The CAN decode itself (RPM scale) comes from a community DBC and is unverified on your car.

@@ -50,6 +50,23 @@
 #define SPEED_HYST          25
 #define GEAR_DEBOUNCE       4
 
+// ---- Manual-transmission gear estimate (RPM / speed) --------------------------------
+// 1 = estimate gear from RPM/speed (manual car). 0 = original automatic CAN 0x228 logic.
+#ifndef GEAR_FROM_RPM
+#define GEAR_FROM_RPM       1
+#endif
+// RPM is CAN 0x202 bytes 0-1, raw * 0.25 (per community DBC; verify at idle: ~700-900).
+// Fill GEAR_RATIO with rpm per km/h for gears 1..6 (see README_PORT.md, "Calibrating"),
+// then set GEAR_CALIBRATED to 1. Until then the gear area stays blank.
+#define GEAR_CALIBRATED     0
+static const float GEAR_RATIO[6] = {0, 0, 0, 0, 0, 0};
+#define GEAR_TOL            0.07f   // accept a ratio within +/-7% of a gear's ratio
+#define GEAR_MIN_KPH        8       // below this the ratio is meaningless
+#define GEAR_MIN_RPM        900     // below this (clutch in / coasting) hold, don't guess
+#define GEAR_CONFIRM        8       // consecutive matching frames before switching
+#define GEAR_HOLD_MS        1500    // keep last gear this long when no match (clutch dip)
+#define GEAR_LOG_RATIO      1       // print rpm/kph/ratio on Serial twice a second
+
 // ---- Screen orientation & label layout (panel is 240x240) -------------------------
 #define SCREEN_ROTATION     2
 #define SPEED_X             0
@@ -66,6 +83,12 @@ uint8_t  len = 0;
 uint8_t  rxBuf[8];
 
 unsigned int speedRaw = 0;
+unsigned int rpmRaw = 0;
+int estGear = 0;               // 0 = unknown/blank
+int candGear = 0;
+int candCount = 0;
+unsigned long lastGearMatchMs = 0;
+unsigned long lastRatioLogMs = 0;
 int speed = 0;
 int prevSpeed = -1;
 
@@ -92,6 +115,47 @@ TFT_eSprite speed_spr = TFT_eSprite(&tft);
 TFT_eSprite gear_spr = TFT_eSprite(&tft);
 
 void drawSpeedGear();
+
+// Nearest calibrated gear within tolerance, or 0.
+static int matchGear(float ratio) {
+  int best = 0;
+  float bestErr = GEAR_TOL;
+  for (int i = 0; i < 6; ++i) {
+    if (GEAR_RATIO[i] <= 0) continue;
+    float err = fabsf(ratio - GEAR_RATIO[i]) / GEAR_RATIO[i];
+    if (err < bestErr) { bestErr = err; best = i + 1; }
+  }
+  return best;
+}
+
+static void updateGearEstimate() {
+  float rpm = rpmRaw * 0.25f;
+  float kph = speedRaw * 0.01f;
+  unsigned long now = millis();
+  float ratio = (kph > 0.1f) ? rpm / kph : 0;
+
+#if GEAR_LOG_RATIO
+  if (now - lastRatioLogMs >= 500) {
+    lastRatioLogMs = now;
+    Serial.printf("rpm=%.0f kph=%.1f ratio=%.1f gear=%d\n", rpm, kph, ratio, estGear);
+  }
+#endif
+
+#if GEAR_CALIBRATED
+  if (kph < GEAR_MIN_KPH) { estGear = 0; candGear = 0; candCount = 0; return; }
+  int m = (rpm >= GEAR_MIN_RPM) ? matchGear(ratio) : 0;
+  if (m == 0) {
+    // Clutch in / between gears: hold the last gear briefly, then blank.
+    if (estGear && now - lastGearMatchMs > GEAR_HOLD_MS) estGear = 0;
+    candGear = 0; candCount = 0;
+    return;
+  }
+  lastGearMatchMs = now;
+  if (m == estGear) { candGear = m; candCount = 0; return; }
+  if (m == candGear) { if (++candCount >= GEAR_CONFIRM) { estGear = m; candCount = 0; } }
+  else { candGear = m; candCount = 1; }
+#endif
+}
 
 // ---- Backlight PWM (LEDC; API differs between arduino-esp32 2.x and 3.x) ----------
 static void backlightBegin() {
@@ -287,11 +351,14 @@ static void handleFrame() {
   if (rxId == 0x202) {
     // Speed is raw * 0.01 km/h; hysteresis so a steady x.5 speed doesn't flicker.
     speedRaw = (rxBuf[2] << 8) | rxBuf[3];
+    rpmRaw = (rxBuf[0] << 8) | rxBuf[1];
+    updateGearEstimate();
     long hi = (long)speed * 100 + 50 + SPEED_HYST;
     long lo = (long)speed * 100 - 50 - SPEED_HYST;
     if ((long)speedRaw >= hi || (long)speedRaw < lo) speed = (speedRaw + 50) / 100;
   }
 
+#if !GEAR_FROM_RPM
   if (rxId == 0x228) {
     gearRaw = rxBuf[0] & 0x07;
     switch (gearRaw) {
@@ -310,6 +377,7 @@ static void handleFrame() {
         break;
     }
   }
+#endif
 
   if (rxId == BRIGHT_ID) {
     dimmerLevel = rxBuf[BRIGHT_LEVEL_IDX];
@@ -333,6 +401,10 @@ void loop() {
   // Drain pending frames (capped so a busy bus can't starve the display), then redraw.
   for (int i = 0; i < 64 && canRead(); ++i) handleFrame();
 
+#if GEAR_FROM_RPM
+  gear = estGear ? "D" : "";           // "D" = show the gear number only
+  if (estGear) current_gear = estGear;
+#endif
   drawSpeedGear();
 
   delay(1);   // yield to the Wi-Fi / idle tasks
