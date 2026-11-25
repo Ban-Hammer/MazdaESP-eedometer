@@ -39,7 +39,7 @@ everything.
 ## Building and flashing
 
 **THIS IS A WIP!**
-Migrating the original Arduino stuff to an ESP native language, as well as streamlining some of the setup process (along with a _very_ loose guide). 
+The ESP32-only port lives in `esp32/` (build/flash steps in `esp32/README_PORT.md`). Migrating the original Arduino stuff to an ESP native language, as well as streamlining some of the setup process (along with a _very_ loose guide). 
 
 ## Repo layout
 
@@ -49,6 +49,7 @@ Arduino/xiao_ota_bridge/        XIAO ESP32-S3 Wi-Fi update bridge
 Arduino/libraries/              vendored mcp_can + shared ota_protocol library
 tools/                          build/OTA/splash helper scripts
 docs/                           design notes and implementation plans
+esp32/                          single-ESP32 PlatformIO port (TWAI CAN + direct ST7789 + native OTA), see esp32/README_PORT.md
 ```
 
 ## Development notes
